@@ -13,6 +13,13 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import puppeteer, { Browser, Page } from "puppeteer";
+import fs from "fs"; // Added for file system operations
+import path, { dirname } from "path"; // Added for path manipulation
+import { fileURLToPath } from "url"; // Added for ES Module path
+
+// ES Module equivalent for __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Define the tools once to avoid repetition
 const TOOLS: Tool[] = [
@@ -39,6 +46,7 @@ const TOOLS: Tool[] = [
         selector: { type: "string", description: "CSS selector for element to screenshot" },
         width: { type: "number", description: "Width in pixels (default: 800)" },
         height: { type: "number", description: "Height in pixels (default: 600)" },
+        savePath: { type: "string", description: "Optional absolute or relative path to save the screenshot file. Defaults to ./puppeteer_screenshots/<name>.png within the server's dist directory." } // Added savePath
       },
       required: ["name"],
     },
@@ -228,36 +236,65 @@ async function handleToolCall(name: string, args: any): Promise<CallToolResult> 
     case "puppeteer_screenshot": {
       const width = args.width ?? 800;
       const height = args.height ?? 600;
-      await page.setViewport({ width, height });
+      // Removed explicit page.setViewport call to allow defaultViewport from launch options to persist
 
-      const screenshot = await (args.selector ?
+      // Capture screenshot as base64 for resource and return value
+      const screenshotBase64 = await (args.selector ?
         (await page.$(args.selector))?.screenshot({ encoding: "base64" }) :
-        page.screenshot({ encoding: "base64", fullPage: true }));
+        page.screenshot({ encoding: "base64", fullPage: true })); // Use fullPage: true
 
-      if (!screenshot) {
+      if (!screenshotBase64) {
         return {
           content: [{
             type: "text",
-            text: args.selector ? `Element not found: ${args.selector}` : "Screenshot failed",
+            text: args.selector ? `Element not found: ${args.selector}` : "Screenshot capture failed",
           }],
           isError: true,
         };
       }
 
-      screenshots.set(args.name, screenshot as string);
+      // Determine save path: use provided path or default
+      const defaultSaveDir = path.resolve(__dirname, 'puppeteer_screenshots');
+      const defaultSavePath = path.join(defaultSaveDir, `${args.name}.png`);
+      const finalSavePath = args.savePath ? path.resolve(args.savePath) : defaultSavePath; // Resolve to handle relative/absolute paths
+      let fileSaveMessage = "";
+
+      try {
+        // Ensure the target directory exists
+        fs.mkdirSync(path.dirname(finalSavePath), { recursive: true });
+
+        // Save screenshot to file (without base64 encoding)
+        await (args.selector ?
+          (await page.$(args.selector))?.screenshot({ path: finalSavePath }) :
+          page.screenshot({ path: finalSavePath, fullPage: true })); // Use fullPage: true
+
+        fileSaveMessage = `\nScreenshot also saved to: ${finalSavePath}`;
+      } catch (error: any) {
+        console.error(`Failed to save screenshot to file '${finalSavePath}': ${error?.message || error}`);
+        fileSaveMessage = `\nFailed to save screenshot to file '${finalSavePath}': ${error?.message || error}`;
+      }
+
+      // Store base64 in memory for resource access
+      screenshots.set(args.name, screenshotBase64 as string);
       server.notification({
         method: "notifications/resources/list_changed",
       });
 
+      // Use the width/height from the actual page viewport if available, otherwise fallback to args/defaults
+      const viewport = page.viewport();
+      const reportWidth = viewport?.width ?? args.width ?? 800;
+      const reportHeight = viewport?.height ?? args.height ?? 600;
+
+      // Return result including base64 and file save status
       return {
         content: [
           {
             type: "text",
-            text: `Screenshot '${args.name}' taken at ${width}x${height}`,
+            text: `Screenshot '${args.name}' taken (viewport: ${reportWidth}x${reportHeight}).${fileSaveMessage}`,
           } as TextContent,
           {
             type: "image",
-            data: screenshot,
+            data: screenshotBase64,
             mimeType: "image/png",
           } as ImageContent,
         ],
