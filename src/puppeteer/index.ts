@@ -232,7 +232,7 @@ async function handleToolCall(name: string, args: any): Promise<CallToolResult> 
 
       const screenshot = await (args.selector ?
         (await page.$(args.selector))?.screenshot({ encoding: "base64" }) :
-        page.screenshot({ encoding: "base64", fullPage: false }));
+        page.screenshot({ encoding: "base64", fullPage: true }));
 
       if (!screenshot) {
         return {
